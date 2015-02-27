@@ -1,10 +1,16 @@
+#! /usr/local/bin/coffee
+
 async = require 'async'
 gpio = require 'pi-gpio'
+dns = require 'dns'
+moment = require 'moment'
 
 port1 = 11
 port2 = 12
 port3 = 13
 port4 = 15
+
+INET_TIMEOUT = 10
 
 powerOn = (port, cb) ->
   console.log 'opening', port
@@ -16,28 +22,34 @@ powerOff = (port, cb) ->
     gpio.close port
     cb?()
 
-port = port1
+waitForInternet = (callback) ->
+  timeout = moment().add(INET_TIMEOUT, 'minutes')
+  connected = false
+  async.whilst ->
+    not connected
+  , (done) ->
+    return done(new Error 'Timeout expired.') if Date.now() > timeout
 
-async.series [ 
+    console.log 'checking..'
+    dns.lookup 'www.google.com', (err) ->
+      console.log 'lookup returned ', err
+      connected = (err is null)
+      done()
+
+  , callback
+
+
+async.series [
   (cb) ->
-    console.log 'opening', port
-    gpio.open port, 'output', ->
-      setTimeout cb, 10000
-  , (cb) ->
-    console.log 'writing 0'
-    gpio.write port, 0, ->
-      setTimeout cb, 10000
-  , (cb) ->
-    console.log 'writing 1'
-    gpio.write port, 1, ->
-      setTimeout cb, 10000
-  , (cb) ->
-    console.log 'closing'
-    gpio.close port
-    cb()
-]
+    powerOn port1, cb
 
+  , (cb) ->
+    waitForInternet cb
 
-# powerOn port, ->
-#   setTimeout (-> powerOff port), 30000
+], (err) ->
+  console.log 'CONNECTED!' unless err
+  console.log 'failed', err if err
+  powerOff port1, ->
+    console.log 'Done.'
+
 
