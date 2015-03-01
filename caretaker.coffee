@@ -1,9 +1,12 @@
 #! /usr/local/bin/coffee
 
+sys = require 'sys'
+{exec} = require 'child_process'
 async = require 'async'
 gpio = require 'pi-gpio'
 dns = require 'dns'
 moment = require 'moment'
+Smtp = require './smtp'
 
 port1 = 11
 port2 = 12
@@ -34,22 +37,70 @@ waitForInternet = (callback) ->
     dns.lookup 'www.google.com', (err) ->
       console.log 'lookup returned ', err
       connected = (err is null)
-      done()
+      return done() unless connected
+      exec 'sudo ntpd', done
 
   , callback
 
 
+turnOffAll = (cb) ->
+  async.parallel [
+    (cb) ->
+      powerOff port1, -> cb()
+    (cb) ->
+      powerOff port2, -> cb()
+    (cb) ->
+      powerOff port3, -> cb()
+    (cb) ->
+      powerOff port4, -> cb()
+  ], cb
+
+takePhotos = (cb) ->
+  # start smtp server
+  # wait for internet
+  # email any file attachemtns
+
+  smtp = new Smtp()
+
+  async.parallel [
+    (cb) ->
+      powerOn port1, cb
+
+    (cb) ->
+      powerOn port3, cb
+
+    (cb) ->
+      smtp.once 'email-received', ->
+        console.log 'received email'
+        cb()
+
+      smtp.starttServer()
+
+    (cb) ->
+      waitForInternet cb
+
+  ], (err) ->
+    console.log 'failed', err if err
+    smtp.sendEmail cb
+
+
 async.series [
   (cb) ->
-    powerOn port1, cb
+    turnOffAll cb
 
-  , (cb) ->
-    waitForInternet cb
+  (cb) ->
+    takePhotos cb
 
-], (err) ->
-  console.log 'CONNECTED!' unless err
-  console.log 'failed', err if err
-  powerOff port1, ->
-    console.log 'Done.'
+  (cb) ->
+    if (new Date()).getHours() is 12
+      turnOffAll(cb)
+    else
+      console.log 'turning off camera'
+      powerOff port3, cb
+], ->
+  console.log 'Done!'
 
+# smtp = new Smtp()
+# smtp.sendEmail ->
+#   console.log 'Done!'
 
