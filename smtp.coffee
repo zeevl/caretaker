@@ -18,8 +18,10 @@ module.exports = class Smtp extends EventEmitter
     server = new SMTPServer
       secure: true
       onAuth: (auth, session, callback) ->
+        console.log 'smtp onAuth'
         callback(null, user: 'steve')
       onData: (stream, session, callback) =>
+        console.log 'smpt ondata', stream
         stream.pipe mailparser
         stream.on 'end', =>
           @emit 'email-received'

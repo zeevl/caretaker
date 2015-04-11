@@ -14,9 +14,13 @@
     "dns": "^0.2.2",
     "emailjs": "^0.3.12",
     "lodash": "^3.3.1",
+    "longjohn": "^0.2.4",
     "mailparser": "^0.4.9",
     "moment": "^2.9.0",
     "pi-gpio": "0.0.6",
     "smtp-server": "^1.0.2"
+  },
+  "devDependencies": {
+    "long-stack-traces": "^0.1.2"
   }
 }

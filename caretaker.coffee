@@ -1,5 +1,6 @@
 #! /usr/local/bin/coffee
 
+# require 'longjohn'
 sys = require 'sys'
 {exec} = require 'child_process'
 async = require 'async'
@@ -8,10 +9,19 @@ dns = require 'dns'
 moment = require 'moment'
 Smtp = require './smtp'
 
+inetSwitch = 7
+# internet
 port1 = 11
 port2 = 12
+# router
 port3 = 13
+# cameras
 port4 = 15
+
+ports =
+  internet: port1
+  router: port3
+  cameras: port4
 
 INET_TIMEOUT = 10
 
@@ -25,9 +35,40 @@ powerOff = (port, cb) ->
     gpio.close port
     cb?()
 
+isInetSwitchOn = (cb) ->
+  console.log 'checking inet switch'
+
+  async.waterfall [
+    (callback) ->
+      gpio.open inetSwitch, 'input pulldown', callback
+
+    (callback) ->
+      gpio.read inetSwitch, callback
+
+    (value, callback) ->
+      console.log "inet switch: #{value}"
+      gpio.close inetSwitch, (err) ->
+        callback err, value
+  ], cb
+
+turnOnInternet = (callback) ->
+  async.auto
+    inet: (cb) ->
+      powerOn ports.internet, -> cb()
+
+    router: (cb) ->
+      powerOn ports.router, -> cb()
+
+    wait: ['inet', 'router', (cb) ->
+      waitForInternet cb
+    ]
+  , ->
+    callback()
+
 waitForInternet = (callback) ->
   timeout = moment().add(INET_TIMEOUT, 'minutes')
   connected = false
+
   async.whilst ->
     not connected
   , (done) ->
@@ -37,23 +78,34 @@ waitForInternet = (callback) ->
     dns.lookup 'www.google.com', (err) ->
       console.log 'lookup returned ', err
       connected = (err is null)
-      return done() unless connected
-      exec 'sudo ntpd', done
+      done()
 
-  , callback
+  , (err) ->
+    console.log 'waitForInternet done', err
+    callback()
 
+resetState = (callback) ->
+  async.auto
+    isInetOn: (cb) ->
+      isInetSwitchOn (err, value) -> cb null, value
 
-turnOffAll = (cb) ->
-  async.parallel [
-    (cb) ->
-      powerOff port1, -> cb()
-    (cb) ->
-      powerOff port2, -> cb()
-    (cb) ->
-      powerOff port3, -> cb()
-    (cb) ->
-      powerOff port4, -> cb()
-  ], cb
+    turnOffInet: ['isInetOn', (cb, results) ->
+      console.log "reset: isInetSwitchOn = #{results.isInetOn}"
+      if results.isInetOn then return cb()
+      powerOff ports.internet, -> cb()
+    ]
+
+    turnOffRouter: ['isInetOn', (cb, results) ->
+      if results.isInetOn then return cb()
+      powerOff ports.router, -> cb()
+    ]
+
+    turnOffCameras: (cb) ->
+      powerOff ports.cameras, -> cb()
+
+  , (err) ->
+    callback()
+
 
 takePhotos = (cb) ->
   # start smtp server
@@ -64,43 +116,45 @@ takePhotos = (cb) ->
 
   async.parallel [
     (cb) ->
-      powerOn port1, cb
-
-    (cb) ->
-      powerOn port3, cb
+      powerOn ports.cameras, cb
 
     (cb) ->
       smtp.once 'email-received', ->
         console.log 'received email'
         cb()
 
-      smtp.starttServer()
-
-    (cb) ->
-      waitForInternet cb
+      smtp.startServer()
 
   ], (err) ->
     console.log 'failed', err if err
     smtp.sendEmail cb
 
 
-async.series [
-  (cb) ->
-    turnOffAll cb
+takeSnapshot = (cb) ->
+  console.log '*** TAKING SNAPSHOT ****'
+  async.waterfall [
+    (cb) ->
+      console.log 'resetState'
+      resetState cb
 
-  (cb) ->
-    takePhotos cb
+    (cb) ->
+      console.log 'turnOnInternet'
+      turnOnInternet cb
 
-  (cb) ->
-    if (new Date()).getHours() is 12
-      turnOffAll(cb)
-    else
-      console.log 'turning off camera'
-      powerOff port3, cb
-], ->
-  console.log 'Done!'
+    (cb) ->
+      console.log 'take photos'
+      takePhotos cb
 
-# smtp = new Smtp()
-# smtp.sendEmail ->
-#   console.log 'Done!'
+    (cb) ->
+      console.log 'turn off internet'
+      resetState cb
 
+  ], (err) ->
+    console.log 'Snapshot Done!', err
+    cb()
+
+# setInterval ->
+#   snapshot()
+# , 1000 * 60 * 30
+
+takeSnapshot()
