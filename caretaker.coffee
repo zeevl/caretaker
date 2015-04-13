@@ -9,6 +9,11 @@ dns = require 'dns'
 moment = require 'moment'
 Smtp = require './smtp'
 
+CAMERA_TIME = 1000 * 60 * 2
+SNAPSHOT_INTERVAL = 1000 * 60 * 10
+SWITCH_POLL = 5007
+
+
 inetSwitch = 7
 # internet
 port1 = 11
@@ -23,30 +28,33 @@ ports =
   router: port3
   cameras: port4
 
+portOn = {}
+
 INET_TIMEOUT = 10
 
 powerOn = (port, cb) ->
+  return if portOn[port]
   console.log 'opening', port
-  gpio.open port, 'output', cb
+  portOn[port] = true
+  gpio.open port, 'output pulldown', cb
 
 powerOff = (port, cb) ->
+  return unless portOn[port]? is false
+  portOn[port] = false
   console.log 'closing', port
   gpio.write port, 1, ->
     gpio.close port
     cb?()
 
 isInetSwitchOn = (cb) ->
-  console.log 'checking inet switch'
-
   async.waterfall [
     (callback) ->
-      gpio.open inetSwitch, 'input pulldown', callback
+      gpio.open inetSwitch, 'input pulldown', -> callback()
 
     (callback) ->
       gpio.read inetSwitch, callback
 
     (value, callback) ->
-      console.log "inet switch: #{value}"
       gpio.close inetSwitch, (err) ->
         callback err, value
   ], cb
@@ -81,7 +89,6 @@ waitForInternet = (callback) ->
       done()
 
   , (err) ->
-    console.log 'waitForInternet done', err
     callback()
 
 resetState = (callback) ->
@@ -90,7 +97,6 @@ resetState = (callback) ->
       isInetSwitchOn (err, value) -> cb null, value
 
     turnOffInet: ['isInetOn', (cb, results) ->
-      console.log "reset: isInetSwitchOn = #{results.isInetOn}"
       if results.isInetOn then return cb()
       powerOff ports.internet, -> cb()
     ]
@@ -104,57 +110,68 @@ resetState = (callback) ->
       powerOff ports.cameras, -> cb()
 
   , (err) ->
+    if err then console.log 'reset: error', err
     callback()
 
 
 takePhotos = (cb) ->
-  # start smtp server
-  # wait for internet
-  # email any file attachemtns
-
-  smtp = new Smtp()
-
-  async.parallel [
+  async.series [
     (cb) ->
       powerOn ports.cameras, cb
 
     (cb) ->
-      smtp.once 'email-received', ->
-        console.log 'received email'
-        cb()
+      setTimeout cb, CAMERA_TIME
 
-      smtp.startServer()
+  ], cb
 
-  ], (err) ->
-    console.log 'failed', err if err
-    smtp.sendEmail cb
-
-
-takeSnapshot = (cb) ->
+takeSnapshot = (callback) ->
   console.log '*** TAKING SNAPSHOT ****'
   async.waterfall [
     (cb) ->
       console.log 'resetState'
       resetState cb
 
-    (cb) ->
+    (..., cb) ->
       console.log 'turnOnInternet'
       turnOnInternet cb
 
-    (cb) ->
+    (..., cb) ->
       console.log 'take photos'
       takePhotos cb
 
-    (cb) ->
+    (..., cb) ->
       console.log 'turn off internet'
       resetState cb
 
   ], (err) ->
     console.log 'Snapshot Done!', err
-    cb()
+    callback?()
 
-# setInterval ->
-#   snapshot()
-# , 1000 * 60 * 30
+updateSwitchState = ->
+  async.auto
+    isSwitchOn: (cb) ->
+      isInetSwitchOn (err, value) -> cb null, value
+
+    toggleInternet: ['isSwitchOn', (cb, results) ->
+      if results.isSwitchOn
+        powerOn ports.internet, -> cb()
+      else
+        powerOff ports.internet, -> cb()
+    ]
+
+    turnOffRouter: ['isSwitchOn', (cb, results) ->
+      if results.isSwitchOn
+        powerOn ports.router, -> cb()
+      else
+        powerOff ports.router, -> cb()
+    ]
+
+    turnOffCameras: (cb) ->
+      powerOff ports.cameras, -> cb()
+
 
 takeSnapshot()
+updateSwitchState()
+
+setInterval takeSnapshot, SNAPSHOT_INTERVAL
+setInterval updateSwitchState, SWITCH_POLL
